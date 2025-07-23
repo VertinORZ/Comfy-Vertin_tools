@@ -338,7 +338,7 @@ class LoraEncryptor:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("加密结果",)
     FUNCTION = "encrypt_lora"
-    CATEGORY = "LoRA工具"
+    CATEGORY = "Vertin工具"
 
     def encrypt_lora(self, lora文件名, 加密密码, 输出文件后缀, 覆盖已存在文件=False, 跳过验证=True):
         if not self.lora_dirs and not os.path.isdir(os.path.join(folder_paths.models_dir, "loras")):
@@ -384,7 +384,7 @@ class LoraBatchEncryptor:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("加密结果汇总",)
     FUNCTION = "batch_encrypt"
-    CATEGORY = "LoRA工具"
+    CATEGORY = "Vertin工具"
 
     def batch_encrypt(self, 加密目录, 加密密码, 输出文件后缀, 覆盖已存在文件=False, 跳过验证=True, 包含子目录=True):
         # 使用用户输入的目录作为目标目录
@@ -474,7 +474,7 @@ class LoraDecryptLoader:
     OUTPUT_TOOLTIPS = ("The modified diffusion model.", "The modified CLIP model.")
     FUNCTION = "load_lora"
 
-    CATEGORY = "LoRA工具"
+    CATEGORY = "Vertin工具"
     DESCRIPTION = "支持加密LoRA文件的加载器，未加密文件可直接加载，选择'None'不加载任何LoRA"
 
     def load_lora(self, model, clip, lora_name, strength_model, strength_clip, password=""):
