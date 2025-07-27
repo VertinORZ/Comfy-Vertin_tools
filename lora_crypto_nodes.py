@@ -596,4 +596,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoraDecryptLoaderModelOnly": "LoRA解密加载器（仅模型）"
 }
 
-logger.info("LoRA工具节点加载完成")
+logger.info("Vertin_tools节点加载完成")
