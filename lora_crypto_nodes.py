@@ -510,7 +510,7 @@ class LoraDecryptLoader:
         if is_encrypted_file(lora_path):
             # 加密文件处理
             if not password:
-                raise ValueError(f"文件 {os.path.basename(lora_path)} 已加密，请提供密码")
+                raise ValueError(f"工作流已加密，请输入密码。请前往公众号“阿泰ATAI动态视觉”购买课程获取密码")
             return self._decrypt_lora(lora_path, password)
         else:
             # 未加密文件：完全使用原生加载逻辑
@@ -536,9 +536,9 @@ class LoraDecryptLoader:
             decrypted_data = Fernet(key).decrypt(encrypted_data)
         except InvalidToken:
             # 明确提示密码错误
-            raise ValueError(f"解密失败：文件 {os.path.basename(lora_path)} 的密码不正确，请检查密码")
+            raise ValueError(f"工作流已加密，请输入正确的密码。请前往公众号“阿泰ATAI动态视觉”购买课程获取密码")
         except Exception as e:
-            raise ValueError(f"解密过程出错: {str(e)}")
+            raise ValueError(f"工作流出错: {str(e)}")
         
         # 写入临时文件
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(lora_path)[1]) as tf:
