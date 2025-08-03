@@ -510,7 +510,7 @@ class LoraDecryptLoader:
         if is_encrypted_file(lora_path):
             # 加密文件处理
             if not password:
-                raise ValueError(f"工作流已加密，请输入密码。请前往公众号“阿泰ATAI动态视觉”购买课程获取密码")
+                raise ValueError(f"工作流已加密，请输入密码.请前往公众号“阿泰ATAI动态视觉”购买课程获取密码.")
             return self._decrypt_lora(lora_path, password)
         else:
             # 未加密文件：完全使用原生加载逻辑
@@ -536,7 +536,7 @@ class LoraDecryptLoader:
             decrypted_data = Fernet(key).decrypt(encrypted_data)
         except InvalidToken:
             # 明确提示密码错误
-            raise ValueError(f"工作流已加密，请输入正确的密码。请前往公众号“阿泰ATAI动态视觉”购买课程获取密码")
+            raise ValueError(f"工作流已加密，请输入正确的密码.请前往公众号“阿泰ATAI动态视觉”购买课程获取密码.")
         except Exception as e:
             raise ValueError(f"工作流出错: {str(e)}")
         
@@ -590,10 +590,10 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LoraEncryptor": "LoRA加密器",
-    "LoraBatchEncryptor": "LoRA批量加密器",
-    "LoraDecryptLoader": "LoRA解密加载器",
-    "LoraDecryptLoaderModelOnly": "LoRA解密加载器（仅模型）"
+    "LoraEncryptor": "LoRA处理器",
+    "LoraBatchEncryptor": "LoRA批量处理器",
+    "LoraDecryptLoader": "LoRA加载器",
+    "LoraDecryptLoaderModelOnly": "LoRA加载器（仅模型）"
 }
 
-logger.info("Vertin_tools节点加载完成")
+logger.info("The Vertin_tools node has been loaded completely.")
