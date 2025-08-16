@@ -1,98 +1,220 @@
 import os
-import tempfile
-import time
-import logging
-from cryptography.fernet import Fernet, InvalidToken
 import torch
-import comfy.sd
+import tempfile
+from cryptography.fernet import Fernet, InvalidToken
 import folder_paths
+import comfy.utils
+import comfy.sd
+import logging
 
 # 配置日志
-logger = logging.getLogger("lora_crypto")
-logger.setLevel(logging.INFO)
+logger = logging.getLogger("lora_crypto")  # 统一日志名称
+logger.setLevel(logging.INFO)  # 设置日志级别
 
-# 加密标记
-ENCRYPTION_MARKER = b"VERTIN_ENCRYPTED"
+ENCRYPTION_MARKER = b"VERTIN_ENCRYPTED"  # 统一加密标记
 
-# 检查safetensors是否可用
-try:
-    from safetensors.torch import load_file as load_safetensors
-    from safetensors.torch import save_file as save_safetensors
-    SAFETENSORS_AVAILABLE = True
-except ImportError:
-    SAFETENSORS_AVAILABLE = False
-
-
-def generate_key(password, salt=None):
-    """生成加密密钥"""
+"""生成加密密钥"""
+def generate_key(password: str, salt: bytes = None):
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.backends import default_backend  # 恢复backend参数
     import base64
     
     if salt is None:
-        salt = os.urandom(16)  # 生成随机盐
+        salt = os.urandom(16)
     
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=100000,
-        backend=default_backend()
+        iterations=480000,
+        backend=default_backend()  # 恢复backend参数
     )
     key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
     return key, salt
 
-
-def is_encrypted_file(file_path):
-    """检查文件是否已加密"""
+"""检查文件是否为加密文件"""
+def is_encrypted_file(file_path: str):
     try:
         with open(file_path, "rb") as f:
-            header = f.read(len(ENCRYPTION_MARKER))
-        return header == ENCRYPTION_MARKER
-    except Exception:
+            return f.read(len(ENCRYPTION_MARKER)) == ENCRYPTION_MARKER
+    except:
         return False
 
-
-def sanitize_folder_name(name):
-    """清理文件夹名称中的非法字符"""
+"""清理文件夹名称"""
+def sanitize_folder_name(name: str):
+    # 使用与第一个文件相同的非法字符清理方式
     invalid_chars = '/\\:*?"<>|'
     for char in invalid_chars:
         name = name.replace(char, '_')
     return name
 
-
-def get_all_lora_files(include_none=True):
-    """获取所有LoRA文件列表"""
-    lora_dirs = folder_paths.get_folder_paths("loras") or []
-    lora_files = []
+"""加密单个文件"""
+def encrypt_single_file(file_path: str, password: str, output_suffix: str, 
+                       overwrite: bool = False, skip_verification: bool = True,
+                       use_password_folder: bool = False):
+    start_time = time.time()  # 增加时间统计
+    lora_filename = os.path.basename(file_path)
+    file_dir = os.path.dirname(file_path)
+    file_ext = os.path.splitext(file_path)[1].lower()
     
+    if is_encrypted_file(file_path):
+        duration = time.time() - start_time
+        return f"跳过: 已加密 {lora_filename} (耗时: {duration:.2f}秒)"
+    
+    valid_extensions = ('.safetensors', '.ckpt', '.bin', '.pth', '.pt', '.lora')
+    if not skip_verification and not (file_ext in valid_extensions and os.path.isfile(file_path)):
+        duration = time.time() - start_time
+        return f"跳过: 无效文件 {lora_filename} (耗时: {duration:.2f}秒)"
+    
+    try:
+        # 生成输出路径
+        base_name = os.path.splitext(lora_filename)[0]
+        clean_suffix = output_suffix.strip('_')
+        output_name = f"{base_name}_{clean_suffix}{file_ext}" if clean_suffix else f"{base_name}_enc{file_ext}"
+        
+        # 如果启用密码文件夹，创建以密码命名的子文件夹
+        if use_password_folder:
+            sanitized_pw = sanitize_folder_name(password)
+            output_dir = os.path.join(file_dir, sanitized_pw)
+            os.makedirs(output_dir, exist_ok=True)
+            location_info = f"原文件目录的[{sanitized_pw}]子文件夹"
+        else:
+            output_dir = file_dir
+            location_info = "原文件目录"
+            
+        output_path = os.path.join(output_dir, output_name)
+        
+        # 检查文件是否已存在
+        if os.path.exists(output_path) and not overwrite:
+            duration = time.time() - start_time
+            return f"跳过: 已存在 {output_name}（保存在{location_info}） (耗时: {duration:.2f}秒)"
+        
+        # 读取文件内容并验证
+        with open(file_path, 'rb') as f:
+            original_content = f.read()
+        
+        # 添加文件验证逻辑
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+            temp_file_path = temp_file.name
+        
+        if file_ext == '.safetensors' and SAFETENSORS_AVAILABLE:
+            try:
+                from safetensors.torch import load_file as load_safetensors
+                from safetensors.torch import save_file as save_safetensors
+                lora_data = load_safetensors(file_path, device='cpu')
+                save_safetensors(lora_data, temp_file_path)
+            except Exception as e:
+                if skip_verification:
+                    logger.warning(f"文件 {lora_filename} 验证警告: {str(e)}，但已选择跳过验证")
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(original_content)
+                else:
+                    os.unlink(temp_file_path)
+                    raise ValueError(f"无法加载safetensors文件: {str(e)}")
+        else:
+            try:
+                lora_data = torch.load(file_path, map_location="cpu", weights_only=False)
+                torch.save(lora_data, temp_file_path)
+            except Exception as e:
+                if skip_verification:
+                    logger.warning(f"文件 {lora_filename} 验证警告: {str(e)}，但已选择跳过验证")
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(original_content)
+                else:
+                    os.unlink(temp_file_path)
+                    raise ValueError(f"无法加载文件: {str(e)}")
+        
+        with open(temp_file_path, 'rb') as f:
+            content_to_encrypt = f.read()
+        
+        # 生成密钥和盐
+        key, salt = generate_key(password)
+        
+        # 加密数据
+        encrypted_data = Fernet(key).encrypt(content_to_encrypt)
+        
+        # 构建加密文件内容 (标记 + 盐 + 加密数据)
+        encrypted_file_content = b"|||".join([ENCRYPTION_MARKER, salt, encrypted_data])
+        
+        # 写入加密文件
+        with open(output_path, "wb") as f:
+            f.write(encrypted_file_content)
+        
+        os.unlink(temp_file_path)  # 清理临时文件
+        
+        # 验证加密结果
+        if not skip_verification:
+            try:
+                with open(output_path, "rb") as f:
+                    verify_data = f.read()
+                
+                parts = verify_data.split(b"|||", 2)
+                if len(parts) != 3 or parts[0] != ENCRYPTION_MARKER:
+                    raise ValueError("加密验证失败: 无效格式")
+                
+                _, verify_salt, verify_encrypted = parts
+                verify_key, _ = generate_key(password, verify_salt)
+                Fernet(verify_key).decrypt(verify_encrypted)
+            except Exception as e:
+                os.remove(output_path)
+                duration = time.time() - start_time
+                return f"失败: {lora_filename} - 加密验证失败: {str(e)} (耗时: {duration:.2f}秒)"
+        
+        duration = time.time() - start_time
+        logger.info(f"加密成功: {lora_filename} → {output_name}（保存在{location_info}） (耗时: {duration:.2f}秒)")
+        return f"成功: {lora_filename} → {output_name}（保存在{location_info}） (耗时: {duration:.2f}秒)"
+        
+    except Exception as e:
+        duration = time.time() - start_time
+        error_msg = f"失败: {lora_filename} - {str(e)} (耗时: {duration:.2f}秒)"
+        logger.error(error_msg)
+        return error_msg
+
+"""递归获取所有LoRA文件"""
+def get_all_lora_files(include_none=True):
+    lora_files = []
+    valid_extensions = ('.safetensors', '.ckpt', '.bin', '.pth', '.pt', '.lora')
+    lora_dirs = folder_paths.get_folder_paths("loras") or []
+    
+    # 添加None选项
     if include_none:
         lora_files.append("None")
     
-    for lora_dir in lora_dirs:
-        if os.path.isdir(lora_dir):
-            for file in os.listdir(lora_dir):
-                if os.path.isfile(os.path.join(lora_dir, file)):
-                    ext = os.path.splitext(file)[1].lower()
-                    if ext in ('.safetensors', '.ckpt', '.bin', '.pth', '.pt', '.lora'):
-                        lora_files.append(file)
+    if not lora_dirs:
+        default_lora_dir = os.path.join(folder_paths.models_dir, "loras")
+        if os.path.isdir(default_lora_dir):
+            lora_dirs = [default_lora_dir]
+    
+    def scan_directory(directory, base_dir):
+        if not os.path.isdir(directory):
+            return
+            
+        try:
+            for item in os.listdir(directory):
+                item_path = os.path.join(directory, item)
+                
+                if os.path.isdir(item_path):
+                    scan_directory(item_path, base_dir)
+                elif os.path.isfile(item_path):
+                    if (item.lower().endswith(valid_extensions) or 
+                        is_encrypted_file(item_path)):
+                        relative_path = os.path.relpath(item_path, base_dir)
+                        lora_files.append(relative_path)
+                        logger.debug(f"发现LoRA文件: {relative_path}")
+        except PermissionError:
+            logger.warning(f"没有权限访问目录: {directory}")
+        except Exception as e:
+            logger.error(f"扫描目录 {directory} 时出错: {str(e)}")
+    
+    for root_dir in lora_dirs:
+        if os.path.isdir(root_dir):
+            scan_directory(root_dir, root_dir)
     
     return sorted(list(set(lora_files)))
 
-
-def get_lora_absolute_path(lora_name):
-    """获取LoRA文件的绝对路径"""
-    lora_dirs = folder_paths.get_folder_paths("loras") or []
-    for lora_dir in lora_dirs:
-        lora_path = os.path.join(lora_dir, lora_name)
-        if os.path.isfile(lora_path):
-            return lora_path
-    return None
-
-
+"""应用LoRA权重到模型"""
 def apply_lora(model, lora_data, strength):
-    """应用LoRA权重到模型"""
     model_sd = model.state_dict()
     original_model = model
     model_keys = list(model_sd.keys())
@@ -189,98 +311,31 @@ def apply_lora(model, lora_data, strength):
         logger.error(f"加载修改后的状态字典时出错: {str(e)}")
         return model
 
+# 获取LoRA文件的绝对路径
+def get_lora_absolute_path(lora_name):
+    lora_dirs = folder_paths.get_folder_paths("loras") or []
+    
+    if not lora_dirs:
+        default_lora_dir = os.path.join(folder_paths.models_dir, "loras")
+        if os.path.isdir(default_lora_dir):
+            lora_dirs = [default_lora_dir]
+    
+    for lora_dir in lora_dirs:
+        full_path = os.path.join(lora_dir, lora_name)
+        if os.path.exists(full_path):
+            return full_path
+    
+    return None
 
-# 单个文件加密函数 - 批量加密时文件保存在原目录的密码子文件夹中
-def encrypt_single_file(lora_path, password, output_suffix, overwrite, skip_validation, use_password_folder=False):
-    start_time = time.time()  # 记录开始时间
-    lora_filename = os.path.basename(lora_path)
-    file_dir = os.path.dirname(lora_path)  # 获取原文件所在目录
-    file_ext = os.path.splitext(lora_path)[1].lower()
-    
-    if is_encrypted_file(lora_path):
-        duration = time.time() - start_time
-        return f"跳过: 已加密 {lora_filename} (耗时: {duration:.2f}秒)"
-    
-    valid_extensions = ('.safetensors', '.ckpt', '.bin', '.pth', '.pt', '.lora')
-    if not skip_validation and not (file_ext in valid_extensions and os.path.isfile(lora_path)):
-        duration = time.time() - start_time
-        return f"跳过: 无效文件 {lora_filename} (耗时: {duration:.2f}秒)"
-    
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-            temp_file_path = temp_file.name
-        
-        with open(lora_path, 'rb') as f:
-            original_content = f.read()
-        
-        if file_ext == '.safetensors' and SAFETENSORS_AVAILABLE:
-            try:
-                lora_data = load_safetensors(lora_path, device='cpu')
-                save_safetensors(lora_data, temp_file_path)
-            except Exception as e:
-                if skip_validation:
-                    logger.warning(f"文件 {lora_filename} 验证警告: {str(e)}，但已选择跳过验证")
-                    with open(temp_file_path, 'wb') as f:
-                        f.write(original_content)
-                else:
-                    os.unlink(temp_file_path)
-                    raise ValueError(f"无法加载safetensors文件: {str(e)}")
-        else:
-            try:
-                lora_data = torch.load(lora_path, map_location="cpu", weights_only=False)
-                torch.save(lora_data, temp_file_path)
-            except Exception as e:
-                if skip_validation:
-                    logger.warning(f"文件 {lora_filename} 验证警告: {str(e)}，但已选择跳过验证")
-                    with open(temp_file_path, 'wb') as f:
-                        f.write(original_content)
-                else:
-                    os.unlink(temp_file_path)
-                    raise ValueError(f"无法加载文件: {str(e)}")
-        
-        with open(temp_file_path, 'rb') as f:
-            content_to_encrypt = f.read()
-        
-        key, salt = generate_key(password)
-        encrypted_data = Fernet(key).encrypt(content_to_encrypt)
-        
-        # 构建输出文件名
-        base_name = os.path.splitext(lora_filename)[0]
-        clean_suffix = output_suffix.strip('_')
-        output_name = f"{base_name}_{clean_suffix}{file_ext}" if clean_suffix else f"{base_name}_enc{file_ext}"
-        
-        # 构建输出路径 - 支持密码文件夹
-        if use_password_folder and password:
-            # 清理密码中的非法字符作为文件夹名
-            sanitized_password = sanitize_folder_name(password)
-            password_folder = os.path.join(file_dir, sanitized_password)
-            os.makedirs(password_folder, exist_ok=True)
-            output_path = os.path.join(password_folder, output_name)
-            location_info = f"原文件目录的[{sanitized_password}]子文件夹"
-        else:
-            output_path = os.path.join(file_dir, output_name)
-            location_info = "原文件目录"
-        
-        if os.path.exists(output_path) and not overwrite:
-            os.unlink(temp_file_path)
-            duration = time.time() - start_time
-            return f"跳过: 已存在 {output_name}（保存在{location_info}） (耗时: {duration:.2f}秒)"
-        
-        with open(output_path, "wb") as f:
-            f.write(ENCRYPTION_MARKER + b"|||" + salt + b"|||" + encrypted_data)
-        
-        os.unlink(temp_file_path)
-        
-        duration = time.time() - start_time
-        logger.info(f"加密成功: {lora_filename} → {output_name}（保存在{location_info}） (耗时: {duration:.2f}秒)")
-        return f"成功: {lora_filename} → {output_name}（保存在{location_info}） (耗时: {duration:.2f}秒)"
-        
-    except Exception as e:
-        duration = time.time() - start_time
-        error_msg = f"失败: {lora_filename} - {str(e)} (耗时: {duration:.2f}秒)"
-        logger.error(error_msg)
-        return error_msg
+# 检查safetensors是否可用
+try:
+    from safetensors.torch import load_file as load_safetensors
+    from safetensors.torch import save_file as save_safetensors
+    SAFETENSORS_AVAILABLE = True
+except ImportError:
+    SAFETENSORS_AVAILABLE = False
 
+import time  # 补充time模块引用
 
 # LoRA加密器节点
 class LoraEncryptor:
@@ -324,7 +379,6 @@ class LoraEncryptor:
             
         # 单个加密不使用密码文件夹
         return (encrypt_single_file(lora_path, 加密密码, 输出文件后缀, 覆盖已存在文件, 跳过验证),)
-
 
 # LoRA批量加密器节点
 class LoraBatchEncryptor:
@@ -421,7 +475,6 @@ class LoraBatchEncryptor:
         summary += "\n".join(results)
         
         return (summary,)
-
 
 # 带解密功能的LoRA加载器
 class LoraDecryptLoader:
@@ -527,7 +580,7 @@ class LoraDecryptLoader:
         finally:
             os.unlink(temp_path)  # 清理临时文件
 
-
+# 仅模型的解密加载器，继承自LoraDecryptLoader
 class LoraDecryptLoaderModelOnly(LoraDecryptLoader):
     """仅模型的解密加载器，继承自LoraDecryptLoader"""
     @classmethod
@@ -556,8 +609,7 @@ class LoraDecryptLoaderModelOnly(LoraDecryptLoader):
         # 调用父类方法，仅返回模型结果
         return (self.load_lora(model, None, lora_name, strength_model, 0, password)[0],)
 
-
-# 节点注册
+# 注册节点 - 统一节点显示名称
 NODE_CLASS_MAPPINGS = {
     "LoraEncryptor": LoraEncryptor,
     "LoraBatchEncryptor": LoraBatchEncryptor,
@@ -572,4 +624,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoraDecryptLoaderModelOnly": "LoRA加载器（仅模型）"
 }
 
+# 统一初始化日志
 logger.info("The Vertin_tools node has been loaded completely.")
